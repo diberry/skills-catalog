@@ -15,8 +15,14 @@ export function parseSkillFile(filePath) {
     // Parse frontmatter using gray-matter
     const parsed = matter(content);
     
-    // Extract triggers from markdown body
-    const triggers = extractTriggers(parsed.content);
+    // Extract triggers from markdown body (section + inline)
+    const sectionTriggers = extractTriggers(parsed.content);
+    const inlineTriggers = extractInlineTriggerPhrases(parsed.content);
+    const triggers = [...new Set([...sectionTriggers, ...inlineTriggers])];
+    
+    // Extract USE FOR / DO NOT USE FOR sections
+    const useFor = extractSectionList(parsed.content, /^##\s+USE\s+FOR/i);
+    const doNotUseFor = extractSectionList(parsed.content, /^##\s+DO\s+NOT\s+USE\s+FOR/i);
     
     // Get skill ID from directory name
     const skillId = path.basename(path.dirname(filePath));
@@ -26,6 +32,8 @@ export function parseSkillFile(filePath) {
       path: path.resolve(filePath),
       frontmatter: parsed.data || {},
       triggers: triggers,
+      useFor: useFor,
+      doNotUseFor: doNotUseFor,
       content: parsed.content
     };
   } catch (error) {
@@ -36,6 +44,8 @@ export function parseSkillFile(filePath) {
       path: path.resolve(filePath),
       frontmatter: {},
       triggers: [],
+      useFor: [],
+      doNotUseFor: [],
       content: '',
       error: error.message
     };
@@ -80,6 +90,59 @@ function extractTriggers(content) {
   }
   
   return triggers;
+}
+
+/**
+ * Extract inline trigger phrases from **Trigger phrases:** pattern
+ * @param {string} content - Markdown content
+ * @returns {Array<string>} Array of trigger phrases
+ */
+function extractInlineTriggerPhrases(content) {
+  const triggers = [];
+  const pattern = /\*\*Trigger phrases?:\*\*\s*(.+)/gi;
+  let match;
+
+  while ((match = pattern.exec(content)) !== null) {
+    const raw = match[1].trim();
+    const parts = raw.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+    for (const part of parts) {
+      const cleaned = part
+        .replace(/^["'\u201c\u201d]/, '')
+        .replace(/["'\u201c\u201d]$/, '')
+        .trim();
+      if (cleaned) triggers.push(cleaned);
+    }
+  }
+
+  return triggers;
+}
+
+/**
+ * Extract list items from a markdown section by header pattern
+ * @param {string} content - Markdown content
+ * @param {RegExp} headerPattern - Pattern matching the section header
+ * @returns {Array<string>} Items from the section
+ */
+function extractSectionList(content, headerPattern) {
+  const items = [];
+  const lines = content.split('\n');
+  let inSection = false;
+
+  for (const line of lines) {
+    if (headerPattern.test(line)) {
+      inSection = true;
+      continue;
+    }
+    if (inSection && /^##\s+/.test(line)) {
+      break;
+    }
+    if (inSection && line.trim().startsWith('-')) {
+      const item = line.replace(/^-\s*/, '').trim();
+      if (item) items.push(item);
+    }
+  }
+
+  return items;
 }
 
 /**

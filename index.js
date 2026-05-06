@@ -10,6 +10,7 @@ import { findSkills } from './src/tools/find.js';
 import { generateSkill } from './src/tools/generate.js';
 import { listDomains } from './src/tools/list.js';
 import { validateSkills } from './src/tools/validate.js';
+import { migrateSkills } from './src/tools/migrate.js';
 
 const server = new Server(
   {
@@ -97,6 +98,43 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
       },
+      {
+        name: 'skills_catalog_migrate',
+        description: 'Analyze and migrate existing SKILL.md files to the latest schema. Extracts inline triggers, infers tags, adds missing fields. Supports report (dry-run) and apply modes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'Optional path to a specific SKILL.md file. If omitted, processes all skills.',
+            },
+            mode: {
+              type: 'string',
+              enum: ['report', 'apply'],
+              description: 'Mode: "report" for dry-run analysis, "apply" to write changes (creates backups).',
+            },
+            options: {
+              type: 'object',
+              description: 'Migration options',
+              properties: {
+                promoteTriggers: {
+                  type: 'boolean',
+                  description: 'Move body ## Triggers into frontmatter triggers array (default: false)',
+                },
+                inferTags: {
+                  type: 'boolean',
+                  description: 'Derive tags from ## USE FOR section keywords (default: true)',
+                },
+                addDefaults: {
+                  type: 'boolean',
+                  description: 'Add status, category defaults to skills missing them (default: true)',
+                },
+              },
+            },
+          },
+          required: ['mode'],
+        },
+      },
     ],
   };
 });
@@ -147,6 +185,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'skills_catalog_validate': {
         const { path } = args;
         const result = validateSkills(path || null);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'skills_catalog_migrate': {
+        const { path: skillPath, mode, options } = args;
+        const result = migrateSkills(skillPath || null, mode, options || {});
         return {
           content: [
             {
