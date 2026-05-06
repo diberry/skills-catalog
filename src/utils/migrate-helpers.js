@@ -2,6 +2,8 @@
  * Migration helpers for skill file transformation
  */
 
+import { normalizeLineEndings, extractMarkdownSectionItems } from './text-utils.js';
+
 /**
  * Extract inline trigger phrases from **Trigger phrases:** pattern
  * @param {string} content - Markdown body content
@@ -9,7 +11,8 @@
  */
 export function extractInlineTriggers(content) {
   const triggers = [];
-  const pattern = /\*\*Trigger phrases?:\*\*\s*(.+)/gi;
+  // Bound the capture to prevent ReDoS
+  const pattern = /\*\*Trigger phrases?:\*\*\s*(.{1,2000}?)(?:\n|$)/gi;
   let match;
 
   while ((match = pattern.exec(content)) !== null) {
@@ -36,7 +39,7 @@ export function extractInlineTriggers(content) {
  * @returns {string[]} Items from USE FOR section
  */
 export function extractUseForItems(content) {
-  return extractSectionItems(content, /^##\s+USE\s+FOR/i);
+  return extractMarkdownSectionItems(content, /^##\s+USE\s+FOR/i);
 }
 
 /**
@@ -45,35 +48,7 @@ export function extractUseForItems(content) {
  * @returns {string[]} Items from DO NOT USE FOR section
  */
 export function extractDoNotUseForItems(content) {
-  return extractSectionItems(content, /^##\s+DO\s+NOT\s+USE\s+FOR/i);
-}
-
-/**
- * Extract list items from a markdown section
- * @param {string} content - Markdown body
- * @param {RegExp} headerPattern - Pattern for section header
- * @returns {string[]}
- */
-function extractSectionItems(content, headerPattern) {
-  const items = [];
-  const lines = content.split('\n');
-  let inSection = false;
-
-  for (const line of lines) {
-    if (headerPattern.test(line)) {
-      inSection = true;
-      continue;
-    }
-    if (inSection && /^##\s+/.test(line)) {
-      break;
-    }
-    if (inSection && line.trim().startsWith('-')) {
-      const item = line.replace(/^-\s*/, '').trim();
-      if (item) items.push(item);
-    }
-  }
-
-  return items;
+  return extractMarkdownSectionItems(content, /^##\s+DO\s+NOT\s+USE\s+FOR/i);
 }
 
 /**
@@ -83,7 +58,8 @@ function extractSectionItems(content, headerPattern) {
  */
 export function extractBodyTriggers(content) {
   const triggers = [];
-  const lines = content.split('\n');
+  const normalized = normalizeLineEndings(content);
+  const lines = normalized.split('\n');
   let inSection = false;
 
   for (const line of lines) {
@@ -213,8 +189,17 @@ export function convertInlineToTriggersSection(content, inlineTriggers) {
 
   // Check if ## Triggers section already exists
   if (/^##\s+Triggers/im.test(cleaned)) {
-    // Append to existing section
-    const lines = cleaned.split('\n');
+    // Extract existing triggers to prevent duplicates
+    const existingTriggers = new Set(extractBodyTriggers(cleaned).map(t => t.toLowerCase()));
+    const newTriggers = inlineTriggers.filter(t => !existingTriggers.has(t.toLowerCase()));
+    
+    if (newTriggers.length === 0) {
+      return cleaned; // No new triggers to add
+    }
+
+    // Append new triggers to existing section
+    const normalized = normalizeLineEndings(cleaned);
+    const lines = normalized.split('\n');
     const result = [];
     let inSection = false;
     let appended = false;
@@ -228,7 +213,7 @@ export function convertInlineToTriggersSection(content, inlineTriggers) {
       if (inSection && /^##\s+/.test(line)) {
         // End of triggers section — insert before next heading
         if (!appended) {
-          for (const t of inlineTriggers) {
+          for (const t of newTriggers) {
             result.push(`- "${t}"`);
           }
           appended = true;
@@ -239,7 +224,7 @@ export function convertInlineToTriggersSection(content, inlineTriggers) {
     }
     // If triggers section was last, append at end
     if (inSection && !appended) {
-      for (const t of inlineTriggers) {
+      for (const t of newTriggers) {
         result.push(`- "${t}"`);
       }
     }

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -405,6 +405,157 @@ describe('migrate tool', () => {
       const updated = readFileSync(filePath, 'utf-8');
       expect(updated).toContain('check deploy status');
       expect(updated).toContain('is the deploy done');
+    });
+  });
+
+  describe('edge cases and robustness', () => {
+    test('handles CRLF line endings', () => {
+      const crlfContent = `---\r\nname: "crlf-skill"\r\ndescription: "Test CRLF"\r\n---\r\n\r\n## Triggers\r\n- "trigger one"\r\n- "trigger two"\r\n`;
+      const crlfPath = path.join(FIXTURES_DIR, 'crlf-test');
+      mkdirSync(crlfPath, { recursive: true });
+      writeFileSync(path.join(crlfPath, 'SKILL.md'), crlfContent);
+
+      const result = analyzeSkill(path.join(crlfPath, 'SKILL.md'));
+      expect(result.bodyTriggers).toEqual(['trigger one', 'trigger two']);
+      expect(result.bodyTriggers.length).toBe(2);
+    });
+
+    test('handles BOM marker', () => {
+      const bomContent = `\uFEFF---\nname: "bom-skill"\ndescription: "Test BOM"\n---\n\n## Triggers\n- "bom trigger"\n`;
+      const bomPath = path.join(FIXTURES_DIR, 'bom-test');
+      mkdirSync(bomPath, { recursive: true });
+      writeFileSync(path.join(bomPath, 'SKILL.md'), bomContent, 'utf-8');
+
+      const result = analyzeSkill(path.join(bomPath, 'SKILL.md'));
+      expect(result.bodyTriggers).toContain('bom trigger');
+    });
+
+    test('handles empty file', () => {
+      const emptyPath = path.join(FIXTURES_DIR, 'empty-test');
+      mkdirSync(emptyPath, { recursive: true });
+      writeFileSync(path.join(emptyPath, 'SKILL.md'), '');
+
+      const result = analyzeSkill(path.join(emptyPath, 'SKILL.md'));
+      expect(result.id).toBe('empty-test');
+      expect(result.bodyTriggers).toEqual([]);
+    });
+
+    test('handles malformed YAML frontmatter', () => {
+      const malformedContent = `---\nname: "unbalanced quote\ndescription: "Bad YAML\n---\n\nContent here`;
+      const malformedPath = path.join(FIXTURES_DIR, 'malformed-test');
+      mkdirSync(malformedPath, { recursive: true });
+      writeFileSync(path.join(malformedPath, 'SKILL.md'), malformedContent);
+
+      // Should not throw, should handle gracefully
+      expect(() => {
+        analyzeSkill(path.join(malformedPath, 'SKILL.md'));
+      }).toThrow();
+    });
+
+    test('handles file with no frontmatter', () => {
+      const noFrontmatter = `# Just a markdown file\n\n## Triggers\n- "no frontmatter trigger"\n`;
+      const noFrontmatterPath = path.join(FIXTURES_DIR, 'no-frontmatter-test');
+      mkdirSync(noFrontmatterPath, { recursive: true });
+      writeFileSync(path.join(noFrontmatterPath, 'SKILL.md'), noFrontmatter);
+
+      const result = analyzeSkill(path.join(noFrontmatterPath, 'SKILL.md'));
+      expect(result.bodyTriggers).toContain('no frontmatter trigger');
+      expect(result.currentFrontmatter).toEqual({});
+    });
+
+    test('handles 13+ inline triggers (ado-board-hygiene pattern)', () => {
+      const manyTriggers = `---\nname: "many-triggers"\ndescription: "Test"\n---\n\n**Trigger phrases:** "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"\n`;
+      const manyPath = path.join(FIXTURES_DIR, 'many-triggers-test');
+      mkdirSync(manyPath, { recursive: true });
+      writeFileSync(path.join(manyPath, 'SKILL.md'), manyTriggers);
+
+      const result = analyzeSkill(path.join(manyPath, 'SKILL.md'));
+      expect(result.inlineTriggers.length).toBe(14);
+      expect(result.inlineTriggers).toContain('a');
+      expect(result.inlineTriggers).toContain('n');
+    });
+
+    test('backup not overwritten on second run', () => {
+      const filePath = path.join(FIXTURES_DIR, 'format-a', 'SKILL.md');
+      const backupPath = filePath + '.bak';
+
+      // First migration
+      applyMigration(filePath);
+      expect(existsSync(backupPath)).toBe(true);
+      const firstBackupContent = readFileSync(backupPath, 'utf-8');
+
+      // Second migration (shouldn't overwrite backup)
+      applyMigration(filePath);
+      const secondBackupContent = readFileSync(backupPath, 'utf-8');
+      expect(secondBackupContent).toBe(firstBackupContent);
+    });
+
+    test('error isolation in batch - middle file corrupted', () => {
+      // Create 3 files: good, bad, good
+      const good1Path = path.join(FIXTURES_DIR, 'batch-good-1');
+      const badPath = path.join(FIXTURES_DIR, 'batch-bad');
+      const good2Path = path.join(FIXTURES_DIR, 'batch-good-2');
+
+      mkdirSync(good1Path, { recursive: true });
+      mkdirSync(badPath, { recursive: true });
+      mkdirSync(good2Path, { recursive: true });
+
+      writeFileSync(path.join(good1Path, 'SKILL.md'), SKILL_FORMAT_A);
+      writeFileSync(path.join(badPath, 'SKILL.md'), '---\nname: "bad\n---'); // Malformed
+      writeFileSync(path.join(good2Path, 'SKILL.md'), SKILL_FORMAT_A);
+
+      // Use glob pattern to find all
+      const config = { skills_directories: [FIXTURES_DIR] };
+      const files = [
+        path.join(good1Path, 'SKILL.md'),
+        path.join(badPath, 'SKILL.md'),
+        path.join(good2Path, 'SKILL.md'),
+      ];
+
+      // Report mode with error isolation
+      const reportResults = files.map(f => {
+        try {
+          return analyzeSkill(f);
+        } catch (error) {
+          return {
+            id: path.basename(path.dirname(f)),
+            path: f,
+            error: error.message,
+            needsMigration: false,
+          };
+        }
+      });
+
+      expect(reportResults.length).toBe(3);
+      expect(reportResults[1].error).toBeDefined(); // Middle file failed
+      expect(reportResults[0].id).toBe('batch-good-1'); // First succeeded
+      expect(reportResults[2].id).toBe('batch-good-2'); // Third succeeded
+    });
+
+    test('atomic write safety - no .tmp files persist', () => {
+      const filePath = path.join(FIXTURES_DIR, 'format-b', 'SKILL.md');
+      applyMigration(filePath);
+
+      // Check for leftover .tmp files
+      const dir = path.dirname(filePath);
+      const files = readdirSync(dir);
+      const tmpFiles = files.filter(f => f.includes('.tmp.'));
+      expect(tmpFiles.length).toBe(0);
+    });
+
+    test('duplicate trigger prevention', () => {
+      const content = `---\nname: "dup-test"\ndescription: "Test"\n---\n\n## Triggers\n- "existing trigger"\n\n**Trigger phrases:** "existing trigger", "new trigger"\n`;
+      const dupPath = path.join(FIXTURES_DIR, 'dup-test');
+      mkdirSync(dupPath, { recursive: true });
+      writeFileSync(path.join(dupPath, 'SKILL.md'), content);
+
+      const result = applyMigration(path.join(dupPath, 'SKILL.md'));
+      const updated = readFileSync(path.join(dupPath, 'SKILL.md'), 'utf-8');
+
+      // Count occurrences of "existing trigger"
+      const matches = (updated.match(/"existing trigger"/g) || []).length;
+      expect(matches).toBe(1); // Should appear only once
+      expect(updated).toContain('"new trigger"');
     });
   });
 });

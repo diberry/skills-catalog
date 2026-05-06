@@ -198,6 +198,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'skills_catalog_migrate': {
         const { path: skillPath, mode, options } = args;
         const result = migrateSkills(skillPath || null, mode, options || {});
+        
+        // Set isError flag when result contains an error field
+        const hasError = result.error || (result.results && result.results.some(r => r.error));
+        
         return {
           content: [
             {
@@ -205,6 +209,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify(result, null, 2),
             },
           ],
+          isError: hasError,
         };
       }
 

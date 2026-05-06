@@ -1,6 +1,7 @@
 import matter from 'gray-matter';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { normalizeLineEndings } from './text-utils.js';
 
 /**
  * Parse a SKILL.md file and extract frontmatter + triggers
@@ -59,7 +60,8 @@ export function parseSkillFile(filePath) {
  */
 function extractTriggers(content) {
   const triggers = [];
-  const lines = content.split('\n');
+  const normalized = normalizeLineEndings(content);
+  const lines = normalized.split('\n');
   let inTriggersSection = false;
   
   for (const line of lines) {

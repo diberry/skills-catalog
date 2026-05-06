@@ -11,6 +11,9 @@ import {
   convertInlineToTriggersSection,
   generateDiff,
 } from '../utils/migrate-helpers.js';
+import { atomicWriteSync, createBackup } from '../utils/file-utils.js';
+import { parseSkillFile } from '../utils/parse.js';
+import { normalizeLineEndings } from '../utils/text-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,10 +129,10 @@ export function applyMigration(filePath, options = DEFAULT_OPTIONS, backup = tru
     return { ...analysis, applied: false, reason: 'No changes needed' };
   }
 
-  // Create backup
+  // Create backup (only if it doesn't already exist)
+  const backupPath = filePath + '.bak';
   if (backup) {
-    const backupPath = filePath + '.bak';
-    copyFileSync(filePath, backupPath);
+    createBackup(filePath);
   }
 
   // Read original and rebuild
@@ -149,7 +152,23 @@ export function applyMigration(filePath, options = DEFAULT_OPTIONS, backup = tru
 
   // Rebuild the file with gray-matter stringify
   const output = matter.stringify(body, analysis.migratedFrontmatter);
-  writeFileSync(filePath, output, 'utf-8');
+  
+  // Write atomically
+  try {
+    atomicWriteSync(filePath, output);
+  } catch (error) {
+    return { ...analysis, applied: false, reason: `Write failed: ${error.message}` };
+  }
+
+  // Post-apply validation
+  const verification = parseSkillFile(filePath);
+  if (verification.error) {
+    // Restore from backup
+    if (existsSync(backupPath)) {
+      copyFileSync(backupPath, filePath);
+    }
+    return { ...analysis, applied: false, reason: `Verification failed: ${verification.error}` };
+  }
 
   return { ...analysis, applied: true };
 }
@@ -158,7 +177,8 @@ export function applyMigration(filePath, options = DEFAULT_OPTIONS, backup = tru
  * Remove ## Triggers section from body (used when promoting to frontmatter)
  */
 function removeTriggersSection(content) {
-  const lines = content.split('\n');
+  const normalized = normalizeLineEndings(content);
+  const lines = normalized.split('\n');
   const result = [];
   let inSection = false;
 
@@ -220,7 +240,24 @@ export function migrateSkills(skillPath = null, mode = 'report', options = {}, c
   }
 
   if (mode === 'report') {
-    const results = files.map(f => analyzeSkill(f, mergedOptions));
+    // Error isolation in batch processing
+    const results = files.map(f => {
+      try {
+        return analyzeSkill(f, mergedOptions);
+      } catch (error) {
+        return {
+          id: path.basename(path.dirname(f)),
+          path: f,
+          error: error.message,
+          needsMigration: false,
+          changes: [],
+          contentChanged: false,
+          inlineTriggers: [],
+          bodyTriggers: [],
+          useForItems: [],
+        };
+      }
+    });
     const needing = results.filter(r => r.needsMigration);
 
     return {
@@ -236,13 +273,29 @@ export function migrateSkills(skillPath = null, mode = 'report', options = {}, c
         contentChanged: r.contentChanged,
         inlineTriggers: r.inlineTriggers,
         useForItems: r.useForItems,
+        error: r.error || undefined,
       })),
       summary: `${needing.length}/${results.length} skills need migration`,
     };
   }
 
   if (mode === 'apply') {
-    const results = files.map(f => applyMigration(f, mergedOptions, true));
+    // Error isolation in batch processing
+    const results = files.map(f => {
+      try {
+        return applyMigration(f, mergedOptions, true);
+      } catch (error) {
+        return {
+          id: path.basename(path.dirname(f)),
+          path: f,
+          error: error.message,
+          applied: false,
+          needsMigration: false,
+          changes: [],
+          reason: `Exception: ${error.message}`,
+        };
+      }
+    });
     const applied = results.filter(r => r.applied);
 
     return {
@@ -256,6 +309,7 @@ export function migrateSkills(skillPath = null, mode = 'report', options = {}, c
         applied: r.applied,
         changes: r.changes,
         reason: r.reason || null,
+        error: r.error || undefined,
       })),
       summary: `Migrated ${applied.length}/${results.length} skills (backups created)`,
     };
