@@ -113,6 +113,21 @@ skills_catalog_validate({
 })
 ```
 
+### Validate Social Or Publishing Skills
+
+For skills that can publish, post, delete, trade, message, or modify external
+accounts, run `skills_catalog_validate` before distribution and review the
+`SKILL.md` for:
+
+- explicit human approval before any live write
+- a dry-run or preview path for generated content
+- local-only handling for credentials, sessions, cookies, and exports
+- a clear stop condition for rate limits or platform safety errors
+
+TweetClaw-style X/Twitter skills should document that search or monitoring
+evidence is reviewed before drafting and that posting requires approval of the
+exact final text.
+
 ### List Domains
 
 ```javascript
